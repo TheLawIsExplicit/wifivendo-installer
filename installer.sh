@@ -9,9 +9,13 @@ pkg install -y git php php-fpm nginx sqlite python
 # Step 3: Setup project folder
 mkdir -p ~/vendo/{www,qrcodes}
 cd ~/vendo
-git clone https://github.com/foswvs/foswvs www
 
-# Step 4: Setup PHP DB
+if [ ! -d www ]; then
+  git clone https://github.com/foswvs/foswvs www
+fi
+
+# Step 4: Setup PHP DB (only if not exists)
+if [ ! -f www/vouchers.db ]; then
 sqlite3 www/vouchers.db <<EOF
 CREATE TABLE vouchers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -22,6 +26,7 @@ CREATE TABLE vouchers (
   mac TEXT
 );
 EOF
+fi
 
 # Step 5: Write PHP login file
 cat > www/login.php <<'EOF'
@@ -41,9 +46,9 @@ if ($res) {
 ?>
 EOF
 
-# Step 6: nginx config
-mkdir -p ~/nginx/conf
-cat > ~/nginx/conf/default.conf <<EOF
+# Step 6: nginx config with proper structure
+mkdir -p ~/nginx/conf/conf.d
+cat > ~/nginx/conf/conf.d/default.conf <<EOF
 server {
   listen 8080;
   root /data/data/com.termux/files/home/vendo/www;
@@ -58,29 +63,28 @@ server {
 }
 EOF
 
-# Step 7: Start servers
-php-fpm &
-nginx -c ~/nginx/conf/default.conf
+cat > ~/nginx/conf/nginx.conf <<EOF
+worker_processes 1;
+events { worker_connections 1024; }
+http {
+  include mime.types;
+  default_type application/octet-stream;
+  sendfile on;
+  keepalive_timeout 65;
 
-# Step 8: Python coin handler
-cat > ~/vendo/coin_listener.py <<EOF
-import serial, sqlite3, time, qrcode
-
-ser = serial.Serial('/dev/ttyUSB0', 9600)
-db = sqlite3.connect('/data/data/com.termux/files/home/vendo/www/vouchers.db')
-
-while True:
-    if ser.read():
-        code = "VC" + str(int(time.time()))
-        duration = 1800
-        db.execute("INSERT INTO vouchers (code, duration, created_at) VALUES (?, ?, datetime('now'))", (code, duration))
-        db.commit()
-        img = qrcode.make(code)
-        img.save(f"/data/data/com.termux/files/home/vendo/qrcodes/{code}.png")
-        print("Voucher created:", code)
+  include /data/data/com.termux/files/home/nginx/conf/conf.d/*.conf;
+}
 EOF
 
-pip install pyserial qrcode
+# Step 7: Start servers
+php-fpm &
+nginx -p ~/nginx -c ~/nginx/conf/nginx.conf
+
+# Step 8: Coin listener (disabled for now)
+cat > ~/vendo/coin_listener.py <<EOF
+# Coin listener disabled until USB device is available
+print("🕳️ USB coin acceptor not connected. Skipping coin listener.")
+EOF
 
 # Step 9: Session watcher
 cat > ~/vendo/session_watch.py <<EOF
@@ -95,15 +99,15 @@ while True:
         start = time.mktime(time.strptime(used_at, "%Y-%m-%d %H:%M:%S"))
         if now - start > duration:
             os.system(f"iptables -t nat -D PREROUTING -m mac --mac-source {mac} -j ACCEPT")
-            print(f"Blocked MAC: {mac}")
+            print(f"⛔ Blocked MAC: {mac}")
             db.execute("DELETE FROM vouchers WHERE mac = ?", (mac,))
             db.commit()
     time.sleep(10)
 EOF
 
-# Step 10: Auto-start both scripts
-python ~/vendo/coin_listener.py &
+# Step 10: Auto-start session watcher only
 python ~/vendo/session_watch.py &
 
-echo "✅ WiFi Vendo backend is set up!"
-echo "💻 Visit http://10.0.0.1:8080 from a connected device to test"
+echo "✅ WiFi Vendo backend is now fully set up and stable!"
+echo "💻 Open http://10.0.0.1:8080 from any connected device to test login flow"
+echo "🧊 Coin acceptor is not active yet—listener is safely paused"
